@@ -80,13 +80,12 @@ def recommend_text(mode, levels):
             return "One way repeated measures ANOVA."
     return "Correlation and simple linear regression."
 
-def jitter_positions(categories, jitter_scale=0.08, seed=123):
-    rng = np.random.default_rng(seed)
-    # map categories to integer positions
-    cats = pd.Categorical(categories)
-    base_pos = cats.codes.astype(float)
-    jitter = rng.normal(0, jitter_scale, size=len(base_pos))
-    return base_pos + jitter, list(cats.categories)
+# Utility for consistent group order and numeric axis mapping
+def category_codes(series):
+    cats = pd.Categorical(series)
+    codes = cats.codes.astype(float)
+    labels = list(cats.categories)
+    return codes, labels
 
 # -----------------------------
 # Sidebar
@@ -101,7 +100,8 @@ with st.sidebar:
         effect = st.slider("Group mean step (effect)", 0.0, 2.0, 0.6, 0.1)
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         error_type = st.radio("Error bars", ["SE", "SD"], index=0, horizontal=True)
-        show_points = st.checkbox("Overlay individual points", value=False)
+        show_points = st.checkbox("Overlay individual points", value=True)
+        point_style = st.radio("Point placement", ["Overlay", "Side"], index=0, horizontal=True)
         seed = st.number_input("Random seed", value=123, step=1)
     elif mode == "Paired / repeated":
         levels = st.slider("Number of conditions", 2, 6, 2, 1)
@@ -129,36 +129,50 @@ if mode == "Independent groups":
     agg = aggregate_stats(df, "group")
     err_col = "se" if error_type == "SE" else "std"
 
-    # Base bar chart with error bars using graph_objects
+    # Map groups to numeric x for precise control
+    x_codes, labels = category_codes(agg["group"])
     fig = go.Figure()
+
+    # Bar trace with error bars
     fig.add_trace(go.Bar(
-        x=agg["group"],
+        x=x_codes,
         y=agg["mean"],
         error_y=dict(type="data", array=agg[err_col], visible=True),
         name="Means",
-        hovertemplate="Group=%{x}<br>Mean=%{y:.3f}<extra></extra>"
+        hovertemplate="Group=%{customdata}<br>Mean=%{y:.3f}<extra></extra>",
+        customdata=agg["group"]
     ))
 
-    # Overlay points if requested with jitter
+    # Overlay individual points by group
     if show_points:
-        xj, ordered_cats = jitter_positions(df["group"], jitter_scale=0.08, seed=seed)
-        # Map numeric x positions back to tick labels
-        fig.add_trace(go.Scatter(
-            x=xj,
-            y=df["y"],
-            mode="markers",
-            name="Individuals",
-            marker=dict(size=6, opacity=0.4),
-            hovertemplate="Group=%{x}<br>y=%{y:.3f}<extra></extra>",
-            showlegend=True
-        ))
-        fig.update_xaxes(
-            tickmode="array",
-            tickvals=np.arange(len(ordered_cats)),
-            ticktext=list(ordered_cats),
-        )
+        # Build one scatter trace per group for clear legend and correct coloring
+        jitter_scale = 0.08 if point_style == "Overlay" else 0.2
+        side_shift = 0.0 if point_style == "Overlay" else 0.25  # small lateral offset
+        for i, g in enumerate(labels):
+            gdf = df[df["group"] == g]
+            x0 = float(i)
+            rng = np.random.default_rng(seed + i)
+            x_jit = x0 + side_shift + rng.normal(0, jitter_scale, size=len(gdf))
+            fig.add_trace(go.Scatter(
+                x=x_jit,
+                y=gdf["y"],
+                mode="markers",
+                name=f"Points {g}",
+                marker=dict(size=6, opacity=0.5, line=dict(width=0)),
+                hovertemplate=f"Group={g}<br>y=%{{y:.3f}}<extra></extra>",
+                showlegend=True
+            ))
 
-    fig.update_layout(xaxis_title="Group", yaxis_title="DV")
+    fig.update_layout(
+        barmode="overlay",
+        xaxis=dict(
+            tickmode="array",
+            tickvals=np.arange(len(labels)),
+            ticktext=labels,
+            title="Group"
+        ),
+        yaxis=dict(title="DV")
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Analysis output")
@@ -193,7 +207,10 @@ elif mode == "Paired / repeated":
     means = aggregate_stats(df, "cond")
     err_col = "se" if error_type == "SE" else "std"
 
-    # Means line with error bars
+    # Ensure condition order is C1, C2, ...
+    cond_order = sorted(means["cond"].unique(), key=lambda c: int(c[1:]))
+    means = means.set_index("cond").reindex(cond_order).reset_index()
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=means["cond"],
@@ -204,11 +221,7 @@ elif mode == "Paired / repeated":
         hovertemplate="Cond=%{x}<br>Mean=%{y:.3f}<extra></extra>"
     ))
 
-    # Subject lines overlay
     if show_spaghetti:
-        # ensure condition order is consistent
-        cond_order = sorted(df["cond"].unique(), key=lambda c: int(c[1:]))  # C1, C2, ...
-        # For each subject, add one line trace
         for sid, subdf in df.groupby("subject"):
             subdf = subdf.set_index("cond").reindex(cond_order).reset_index()
             fig.add_trace(go.Scatter(
@@ -244,7 +257,6 @@ else:  # Correlation
     df = simulate_correlation(n=n, slope=slope, noise_sd=noise_sd, seed=seed)
 
     st.subheader("Plot")
-    # Scatter with OLS trendline is fine via go by fitting regression
     slope_hat, intercept_hat, r_val, p_val, _ = stats.linregress(df["x"], df["y"])
     xline = np.linspace(df["x"].min(), df["x"].max(), 100)
     yline = intercept_hat + slope_hat * xline
