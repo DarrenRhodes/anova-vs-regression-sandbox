@@ -88,9 +88,9 @@ with st.sidebar:
     mode = st.selectbox("Choose design", ["Independent groups", "Paired / repeated", "Correlation"], index=0)
 
     if mode == "Independent groups":
-        levels = st.slider("Number of groups", 2, 6, 3, 1)
+        levels = st.slider("Number of groups", 2, 6, 2, 1)
         n_per = st.slider("Participants per group", 5, 150, 30, 5)
-        effect = st.slider("Group mean step", 0.0, 2.0, 0.6, 0.1)
+        effect = st.slider("Group mean step (effect)", 0.0, 2.0, 0.6, 0.1)
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         error_type = st.radio("Error bars", ["SE", "SD"], index=0, horizontal=True)
         show_points = st.checkbox("Overlay individual points", value=True)
@@ -122,7 +122,7 @@ if mode == "Independent groups":
     agg = aggregate_stats(df, "group")
     err_col = "se" if error_type == "SE" else "std"
 
-    # Use numeric x for both bars and points so jitter works for every group
+    # Shared numeric x for bars and points so jitter works for every group
     labels = agg["group"].tolist()
     x_pos = np.arange(len(labels))
 
@@ -144,7 +144,7 @@ if mode == "Independent groups":
         side_shift = 0.0 if point_style == "Overlay" else 0.25
         for i, g in enumerate(labels):
             gdf = df[df["group"] == g]
-            rng = np.random.default_rng(seed + i)
+            rng = np.random.default_rng(seed + 1000 + i)  # independent RNG per group
             x_jit = i + side_shift + rng.normal(0, jitter_scale, size=len(gdf))
             fig.add_trace(go.Scatter(
                 x=x_jit,
