@@ -80,13 +80,6 @@ def recommend_text(mode, levels):
             return "One way repeated measures ANOVA."
     return "Correlation and simple linear regression."
 
-# Utility for consistent group order and numeric axis mapping
-def category_codes(series):
-    cats = pd.Categorical(series)
-    codes = cats.codes.astype(float)
-    labels = list(cats.categories)
-    return codes, labels
-
 # -----------------------------
 # Sidebar
 # -----------------------------
@@ -95,9 +88,9 @@ with st.sidebar:
     mode = st.selectbox("Choose design", ["Independent groups", "Paired / repeated", "Correlation"], index=0)
 
     if mode == "Independent groups":
-        levels = st.slider("Number of groups", 2, 6, 2, 1)
+        levels = st.slider("Number of groups", 2, 6, 3, 1)
         n_per = st.slider("Participants per group", 5, 150, 30, 5)
-        effect = st.slider("Group mean step (effect)", 0.0, 2.0, 0.6, 0.1)
+        effect = st.slider("Group mean step", 0.0, 2.0, 0.6, 0.1)
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         error_type = st.radio("Error bars", ["SE", "SD"], index=0, horizontal=True)
         show_points = st.checkbox("Overlay individual points", value=True)
@@ -129,36 +122,36 @@ if mode == "Independent groups":
     agg = aggregate_stats(df, "group")
     err_col = "se" if error_type == "SE" else "std"
 
-    # Map groups to numeric x for precise control
-    x_codes, labels = category_codes(agg["group"])
+    # Use numeric x for both bars and points so jitter works for every group
+    labels = agg["group"].tolist()
+    x_pos = np.arange(len(labels))
+
     fig = go.Figure()
 
-    # Bar trace with error bars
+    # Bars with error bars
     fig.add_trace(go.Bar(
-        x=x_codes,
+        x=x_pos,
         y=agg["mean"],
         error_y=dict(type="data", array=agg[err_col], visible=True),
         name="Means",
         hovertemplate="Group=%{customdata}<br>Mean=%{y:.3f}<extra></extra>",
-        customdata=agg["group"]
+        customdata=labels
     ))
 
-    # Overlay individual points by group
+    # Points overlaid or to the side, jittered per group
     if show_points:
-        # Build one scatter trace per group for clear legend and correct coloring
         jitter_scale = 0.08 if point_style == "Overlay" else 0.2
-        side_shift = 0.0 if point_style == "Overlay" else 0.25  # small lateral offset
+        side_shift = 0.0 if point_style == "Overlay" else 0.25
         for i, g in enumerate(labels):
             gdf = df[df["group"] == g]
-            x0 = float(i)
             rng = np.random.default_rng(seed + i)
-            x_jit = x0 + side_shift + rng.normal(0, jitter_scale, size=len(gdf))
+            x_jit = i + side_shift + rng.normal(0, jitter_scale, size=len(gdf))
             fig.add_trace(go.Scatter(
                 x=x_jit,
                 y=gdf["y"],
                 mode="markers",
                 name=f"Points {g}",
-                marker=dict(size=6, opacity=0.5, line=dict(width=0)),
+                marker=dict(size=6, opacity=0.55),
                 hovertemplate=f"Group={g}<br>y=%{{y:.3f}}<extra></extra>",
                 showlegend=True
             ))
@@ -167,7 +160,7 @@ if mode == "Independent groups":
         barmode="overlay",
         xaxis=dict(
             tickmode="array",
-            tickvals=np.arange(len(labels)),
+            tickvals=x_pos,
             ticktext=labels,
             title="Group"
         ),
@@ -207,7 +200,7 @@ elif mode == "Paired / repeated":
     means = aggregate_stats(df, "cond")
     err_col = "se" if error_type == "SE" else "std"
 
-    # Ensure condition order is C1, C2, ...
+    # Order C1, C2, ...
     cond_order = sorted(means["cond"].unique(), key=lambda c: int(c[1:]))
     means = means.set_index("cond").reindex(cond_order).reset_index()
 
@@ -252,7 +245,7 @@ elif mode == "Paired / repeated":
     st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"),
                        file_name="paired_rm.csv", mime="text/csv")
 
-else:  # Correlation
+else:
     st.info(recommend_text(mode, None))
     df = simulate_correlation(n=n, slope=slope, noise_sd=noise_sd, seed=seed)
 
