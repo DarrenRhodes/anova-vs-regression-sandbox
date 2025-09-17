@@ -46,18 +46,19 @@ def simulate_independent_groups(n_per_group=30, levels=2, effect=0.6, noise_sd=1
     return pd.DataFrame(rows)
 
 
-def simulate_paired(n_subjects=30, effect=0.5, noise_sd=1.0, rho=0.4, seed=123):
+def simulate_within_levels(n_subjects=30, levels=2, step=0.5, noise_sd=1.0, rho=0.4, seed=123):
     rng = np.random.default_rng(seed)
-    cov = np.array([[1.0, rho], [rho, 1.0]]) * (noise_sd ** 2)
-    base = rng.normal(0, 0.5, size=n_subjects)
-    eps = rng.multivariate_normal([0, 0], cov, size=n_subjects)
-    a = base + eps[:, 0]
-    b = base + effect + eps[:, 1]
+    means = np.array([i * step for i in range(levels)])
+    cov = np.full((levels, levels), rho)
+    np.fill_diagonal(cov, 1.0)
+    cov = cov * (noise_sd ** 2)
     rows = []
-    for i in range(n_subjects):
-        sid = f"S{i+1}"
-        rows.append({"subject": sid, "cond": "A", "y": a[i]})
-        rows.append({"subject": sid, "cond": "B", "y": b[i]})
+    for s in range(n_subjects):
+        base = rng.normal(0, 0.5)
+        eps = rng.multivariate_normal(np.zeros(levels), cov)
+        for i in range(levels):
+            y = base + means[i] + eps[i]
+            rows.append({"subject": f"S{s+1}", "cond": f"C{i+1}", "y": y})
     return pd.DataFrame(rows)
 
 
@@ -75,7 +76,10 @@ def recommend_text(mode, levels):
         else:
             return "One way ANOVA."
     if mode == "Paired / repeated":
-        return "Paired samples t test."
+        if levels == 2:
+            return "Paired samples t test."
+        else:
+            return "One way repeated measures ANOVA."
     return "Correlation and simple linear regression."
 
 # -------------------------------------------------------------
@@ -92,10 +96,12 @@ with st.sidebar:
         effect = st.slider("Group mean step (effect)", 0.0, 2.0, 0.6, 0.1)
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         error_type = st.radio("Error bars", ["SE", "SD"], index=0, horizontal=True)
+        show_points = st.checkbox("Overlay individual points", value=False)
         seed = st.number_input("Random seed", value=123, step=1)
     elif mode == "Paired / repeated":
+        levels = st.slider("Number of conditions", 2, 6, 2, 1)
         n_subj = st.slider("Participants", 5, 150, 30, 5)
-        effect = st.slider("Mean difference B − A", 0.0, 2.0, 0.5, 0.1)
+        step = st.slider("Condition mean step", 0.0, 2.0, 0.5, 0.1)
         rho = st.slider("Within person correlation", 0.0, 0.9, 0.4, 0.05)
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         error_type = st.radio("Error bars", ["SE", "SD"], index=0, horizontal=True)
@@ -107,20 +113,29 @@ with st.sidebar:
         noise_sd = st.slider("Noise SD", 0.1, 3.0, 1.0, 0.1)
         seed = st.number_input("Random seed", value=123, step=1)
 
+# -------------------------------------------------------------
+# Main logic
+# -------------------------------------------------------------
+
 if mode == "Independent groups":
     st.info(recommend_text(mode, levels))
     df = simulate_independent_groups(n_per_group=n_per, levels=levels, effect=effect, noise_sd=noise_sd, seed=seed)
+
     st.subheader("Plot")
     agg = df.groupby("group")["y"].agg(["mean", "std", "count"]).reset_index()
     agg["se"] = agg["std"] / np.sqrt(agg["count"])
     err_col = "se" if error_type == "SE" else "std"
     fig = px.bar(agg, x="group", y="mean", error_y=err_col)
+    if show_points:
+        jitter = px.strip(df, x="group", y="y", opacity=0.4)
+        for tr in jitter.data:
+            fig.add_trace(tr)
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Analysis output")
     if levels == 2:
-        g1 = df[df.group == "G1"]["y"].values
-        g2 = df[df.group == "G2"]["y"].values
+        g1 = df[df.group == "G1"].sort_values("subject")["y"].values
+        g2 = df[df.group == "G2"].sort_values("subject")["y"].values
         t, p = stats.ttest_ind(g1, g2, equal_var=False)
         d = cohen_d_ind(g1, g2)
         st.write(f"Independent t test: t = {t:.3f}, p = {p:.4f}, Cohen d = {d:.3f}")
@@ -141,27 +156,32 @@ if mode == "Independent groups":
     st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name="independent_groups.csv", mime="text/csv")
 
 elif mode == "Paired / repeated":
-    st.info(recommend_text(mode, None))
-    df = simulate_paired(n_subjects=n_subj, effect=effect, noise_sd=noise_sd, rho=rho, seed=seed)
+    st.info(recommend_text(mode, levels))
+    df = simulate_within_levels(n_subjects=n_subj, levels=levels, step=step, noise_sd=noise_sd, rho=rho, seed=seed)
+
     st.subheader("Plot")
     means = df.groupby("cond")["y"].agg(["mean", "std", "count"]).reset_index()
     means["se"] = means["std"] / np.sqrt(means["count"])
     err_col = "se" if error_type == "SE" else "std"
     fig = px.line(means, x="cond", y="mean", markers=True, error_y=err_col)
     if show_spaghetti:
-        fig2 = px.line(df, x="cond", y="y", color="subject", line_group="subject", opacity=0.25)
-        for tr in fig2.data:
+        sp = px.line(df, x="cond", y="y", color="subject", line_group="subject", opacity=0.25)
+        for tr in sp.data:
             fig.add_trace(tr)
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Analysis output")
-    a = df[df.cond == "A"].sort_values("subject")["y"].values
-    b = df[df.cond == "B"].sort_values("subject")["y"].values
-    t, p = stats.ttest_rel(a, b)
-    d = cohen_d_paired(a, b)
-    st.write(f"Paired t test: t = {t:.3f}, p = {p:.4f}, Cohen d_z = {d:.3f}")
+    if levels == 2:
+        a = df[df.cond == "C1"].sort_values("subject")["y"].values
+        b = df[df.cond == "C2"].sort_values("subject")["y"].values
+        t, p = stats.ttest_rel(a, b)
+        d = cohen_d_paired(a, b)
+        st.write(f"Paired t test: t = {t:.3f}, p = {p:.4f}, Cohen d_z = {d:.3f}")
+    else:
+        aovrm = sm.stats.AnovaRM(df, depvar="y", subject="subject", within=["cond"]).fit()
+        st.dataframe(aovrm.anova_table.round(4))
 
-    st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name="paired.csv", mime="text/csv")
+    st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name="paired_rm.csv", mime="text/csv")
 
 else:  # Correlation
     st.info(recommend_text(mode, None))
@@ -181,9 +201,10 @@ st.markdown(
     """
 Reading the outputs
 - Independent groups with 2 levels uses an independent t test. With 3 or more levels use one way ANOVA.
-- Paired design uses a paired t test on the same people across two conditions.
+- Paired or repeated designs: 2 conditions use a paired t test. 3 or more conditions use one way repeated measures ANOVA.
 - Use SE or SD error bars from the sidebar. SE reflects certainty of the mean, SD reflects spread of scores.
 - Correlation uses Pearson r, equivalent to the slope test in simple linear regression.
+- Overlay points or subject lines to see variability.
 - Use the CSVs in JASP to practice reporting APA style results.
 """
 )
